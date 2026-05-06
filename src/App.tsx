@@ -8,13 +8,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Calculator, ClipboardList, Weight, Search, Stethoscope, Droplets, Info, AlertCircle, Share2, Printer, Clock, BookOpen, ChevronDown, ChevronUp } from 'lucide-react';
 import { MEDICAMENTOS, CATEGORIAS, PROTOCOLOS } from './constants';
 
-function parseIdadeParaMeses(idadeStr: string): number | null {
+function parseIdadeParaDias(idadeStr: string): number | null {
   if (!idadeStr) return null;
   const normalized = idadeStr.toLowerCase().trim();
   
-  // Extract all numbers and units
-  const regex = /(\d+)\s*(mes|mês|ano|a)/g;
-  let totalMonths = 0;
+  const regex = /(\d+)\s*(dia|d|mes|mês|m|ano|a|y)/g;
+  let totalDays = 0;
   let match;
   let found = false;
 
@@ -22,23 +21,21 @@ function parseIdadeParaMeses(idadeStr: string): number | null {
     found = true;
     const num = parseInt(match[1]);
     const unit = match[2];
-    if (unit.startsWith('m')) {
-      totalMonths += num;
-    } else {
-      totalMonths += num * 12;
+    if (unit.startsWith('d')) {
+      totalDays += num;
+    } else if (unit.startsWith('m')) {
+      totalDays += num * 30.44;
+    } else if (unit.startsWith('a') || unit.startsWith('y')) {
+      totalDays += num * 365.25;
     }
   }
 
-  if (found) return totalMonths;
+  if (found) return Math.round(totalDays);
 
-  // Fallback: If just a number is provided
   const justNumbers = normalized.match(/^(\d+)$/);
   if (justNumbers) {
     const num = parseInt(justNumbers[1]);
-    // If number is small (e.g. < 24) and no unit, we can't be sure, but usually years in dosage apps
-    // However, the placeholder says "3 meses ou 5 anos". 
-    // Let's assume years if no unit.
-    return num * 12;
+    return Math.round(num * 365.25);
   }
 
   return null;
@@ -51,6 +48,7 @@ export default function App() {
   const [medicamentoId, setMedicamentoId] = useState<string>('');
   const [showResult, setShowResult] = useState(false);
   const [showRef, setShowRef] = useState(false);
+  const [showDilutionTable, setShowDilutionTable] = useState(false);
   const [refSearch, setRefSearch] = useState('');
 
   const filteredProtocolos = useMemo(() => {
@@ -63,6 +61,12 @@ export default function App() {
         prot.categoria.toLowerCase().includes(search)
       )
     })).filter(prot => prot.itens.length > 0);
+  }, [refSearch]);
+
+  const dilutionData = useMemo(() => {
+    return Object.values(MEDICAMENTOS)
+      .filter(m => !!m.reconstituicao)
+      .filter(m => !refSearch || m.nome.toLowerCase().includes(refSearch.toLowerCase()));
   }, [refSearch]);
 
   const selectedMedicamento = MEDICAMENTOS[medicamentoId];
@@ -82,6 +86,7 @@ export default function App() {
   const dosage = useMemo(() => {
     if (showResult && selectedMedicamento && peso) {
       const p = parseFloat(peso);
+      let calculatedDose = "";
       
       if (dosePorQuilo && selectedMedicamento.concentracaoMgMl) {
         const d = parseFloat(dosePorQuilo);
@@ -89,32 +94,64 @@ export default function App() {
         const volume = totalMg / selectedMedicamento.concentracaoMgMl;
         
         if (selectedMedicamento.unidade === 'gotas') {
-          return Math.round(volume * 20) + " gotas";
+          calculatedDose = Math.round(volume * 20) + " gotas";
         } else {
-          return volume.toFixed(1) + " mL";
+          calculatedDose = volume.toFixed(1) + " mL";
+        }
+      } else {
+        calculatedDose = selectedMedicamento.calc(p);
+      }
+
+      // Se a unidade for 'especial' (como Sulfato Ferroso), não tentamos conversão secundária
+      if (selectedMedicamento.unidade === 'especial') {
+        return { primary: calculatedDose, secondary: null, type: 'especial' };
+      }
+
+      // Se for em gotas, adicionar a conversão para mL como informação secundária e vice-versa
+      if (calculatedDose.includes("gotas") && !calculatedDose.includes("mL")) {
+        const dropsMatch = calculatedDose.match(/(\d+)/);
+        if (dropsMatch) {
+          const drops = parseInt(dropsMatch[1]);
+          const ml = (drops / 20).toFixed(1);
+          return { primary: calculatedDose, secondary: `${ml} mL`, type: 'gotas' };
+        }
+      } else if (calculatedDose.includes("mL") && !selectedMedicamento.categoria.includes('Injetáveis')) {
+        const mlMatch = calculatedDose.match(/(\d+(\.\d+)?)/);
+        if (mlMatch) {
+          const ml = parseFloat(mlMatch[1]);
+          // Apenas mostrar gotas se o volume for pequeno o suficiente para ser contado
+          if (ml <= 5) {
+            const drops = Math.round(ml * 20);
+            return { primary: calculatedDose, secondary: `${drops} gotas`, type: 'mL' };
+          }
         }
       }
       
-      return selectedMedicamento.calc(p);
+      return { primary: calculatedDose, secondary: null, type: 'mL' };
     }
-    return '';
+    return null;
   }, [showResult, selectedMedicamento, peso, dosePorQuilo]);
 
-  const explicitDose = useMemo(() => {
+  const doseInfo = useMemo(() => {
     if (!showResult || !selectedMedicamento) return null;
     const typeLabel = selectedMedicamento.doseTipo === 'dia' ? '/dia' : '/dose';
-    if (dosePorQuilo) return dosePorQuilo + " mg/kg" + typeLabel;
-    if (selectedMedicamento.doseSugeridaMgKg) return selectedMedicamento.doseSugeridaMgKg + " mg/kg" + typeLabel;
+    if (dosePorQuilo) {
+      return { label: dosePorQuilo + " mg/kg" + typeLabel, isCustom: true };
+    }
+    if (selectedMedicamento.doseSugeridaMgKg) {
+      return { label: selectedMedicamento.doseSugeridaMgKg + " mg/kg" + typeLabel, isCustom: false };
+    }
     return null;
   }, [showResult, selectedMedicamento, dosePorQuilo]);
 
   const ageWarning = useMemo(() => {
     if (!showResult || !selectedMedicamento || !idade) return null;
-    const totalMonths = parseIdadeParaMeses(idade);
-    if (totalMonths !== null && selectedMedicamento.idadeMinimaMeses && totalMonths < selectedMedicamento.idadeMinimaMeses) {
-      const minIdadeStr = selectedMedicamento.idadeMinimaMeses >= 12 
-        ? `${selectedMedicamento.idadeMinimaMeses / 12} ano(s)` 
-        : `${selectedMedicamento.idadeMinimaMeses} meses`;
+    const totalDays = parseIdadeParaDias(idade);
+    const minDays = selectedMedicamento.idadeMinimaMeses ? selectedMedicamento.idadeMinimaMeses * 30.44 : 0;
+    if (totalDays !== null && minDays > 0 && totalDays < minDays) {
+      const minIdadeStr = selectedMedicamento.idadeMinimaMeses! >= 12 
+        ? `${selectedMedicamento.idadeMinimaMeses! / 12} ano(s)` 
+        : `${selectedMedicamento.idadeMinimaMeses!} meses`;
       return `Atenção: Uso não recomendado para pacientes menores de ${minIdadeStr}.`;
     }
     return null;
@@ -225,12 +262,12 @@ export default function App() {
             {/* Idade Input */}
             <div className="space-y-3">
               <label className="block text-[10px] font-bold text-teal-800 uppercase tracking-widest ml-1 flex items-center gap-2">
-                <Clock className="w-3 h-3" /> Idade (Anos ou Meses)
+                <Clock className="w-3 h-3" /> Idade (Anos, Meses ou Dias)
               </label>
               <div className="relative group">
                 <input
                   type="text"
-                  placeholder="Ex: 3 meses ou 5 anos"
+                  placeholder="Ex: 5 dias, 3 meses ou 5 anos"
                   value={idade}
                   onChange={(e) => {
                     setIdade(e.target.value);
@@ -277,62 +314,106 @@ export default function App() {
           </div>
         </section>
 
-        {/* Reference Protocols Section */}
-        <section className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] overflow-hidden transition-all shadow-lg flex flex-col">
-          <button 
-            onClick={() => setShowRef(!showRef)}
-            className="w-full px-6 py-4 flex items-center justify-between text-teal-800 hover:bg-white/20 transition-colors shrink-0"
-          >
-            <div className="flex items-center gap-2">
-              <BookOpen className="w-5 h-5" />
-              <span className="font-bold text-sm uppercase tracking-widest">Referência Pediátrica</span>
-            </div>
-            {showRef ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-          </button>
-          
+        {/* Tabs for Reference and Dilution */}
+        <section className="flex flex-col gap-4">
+          <div className="flex gap-2">
+            <button 
+              onClick={() => { setShowRef(!showRef); setShowDilutionTable(false); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl border transition-all font-bold text-[10px] uppercase tracking-wider ${showRef ? 'bg-teal-600 border-teal-600 text-white shadow-lg' : 'bg-white/60 border-white text-slate-500 hover:bg-white'}`}
+            >
+              <BookOpen className="w-4 h-4" /> Protocolos
+            </button>
+            <button 
+              onClick={() => { setShowDilutionTable(!showDilutionTable); setShowRef(false); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl border transition-all font-bold text-[10px] uppercase tracking-wider ${showDilutionTable ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-white/60 border-white text-slate-500 hover:bg-white'}`}
+            >
+              <Droplets className="w-4 h-4" /> Diluições
+            </button>
+          </div>
+
           <AnimatePresence>
-            {showRef && (
+            {(showRef || showDilutionTable) && (
               <motion.div
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: "auto", opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden bg-white/30 flex flex-col max-h-[600px]"
+                className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] overflow-hidden shadow-lg flex flex-col max-h-[500px]"
               >
-                <div className="px-6 pb-4">
+                <div className="px-6 py-4 flex items-center justify-between border-b border-white/40 bg-white/20">
+                  <div className="flex items-center gap-2">
+                    {showRef ? <BookOpen className="w-4 h-4 text-teal-600" /> : <Droplets className="w-4 h-4 text-blue-600" />}
+                    <span className="font-bold text-xs uppercase tracking-widest text-slate-700">
+                      {showRef ? 'Protocolos de Dose' : 'Guia de Reconstatituição'}
+                    </span>
+                  </div>
                   <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
                     <input 
                       type="text"
-                      placeholder="Buscar no guia (ex: dipirona)..."
+                      placeholder="Filtrar..."
                       value={refSearch}
                       onChange={(e) => setRefSearch(e.target.value)}
-                      className="w-full bg-white/50 border border-teal-100/50 rounded-xl pl-8 pr-4 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-teal-500/20"
+                      className="bg-white/50 border border-white/40 rounded-lg pl-8 pr-3 py-1 text-[10px] focus:outline-none focus:ring-2 focus:ring-teal-500/20 w-32"
                     />
                   </div>
                 </div>
 
-                <div className="p-6 pt-0 space-y-6 overflow-y-auto custom-scrollbar flex-1">
-                  {filteredProtocolos.map((prot) => (
-                    <div key={prot.categoria} className="space-y-2">
-                      <h4 className="text-[10px] font-black text-teal-600 uppercase tracking-[0.2em] mb-2 sticky top-0 bg-white/30 backdrop-blur-md py-1">{prot.categoria}</h4>
-                      <div className="grid gap-2">
-                        {prot.itens.map(item => (
-                          <div key={item.nome} className="bg-white/50 p-3 rounded-xl border border-teal-50 flex justify-between items-center text-xs group hover:bg-white transition-colors">
-                            <div className="flex-1 pr-2">
-                              <p className="font-bold text-slate-800">{item.nome}</p>
-                              <p className="text-slate-400 text-[10px] leading-tight">{item.obs}</p>
-                            </div>
-                            <span className="bg-teal-100 text-teal-700 font-black px-2 py-1 rounded-lg shrink-0 whitespace-nowrap">
-                              {item.dose}
-                            </span>
+                <div className="p-4 overflow-y-auto custom-scrollbar flex-1">
+                  {showRef ? (
+                    <div className="space-y-6">
+                      {filteredProtocolos.map((prot) => (
+                        <div key={prot.categoria} className="space-y-2">
+                          <h4 className="text-[9px] font-black text-teal-600 uppercase tracking-widest mb-1">{prot.categoria}</h4>
+                          <div className="grid gap-2">
+                            {prot.itens.map(item => (
+                              <div key={item.nome} className="bg-white/50 p-3 rounded-xl border border-teal-50 flex justify-between items-center text-xs group hover:bg-white transition-colors">
+                                <div className="flex-1 pr-2">
+                                  <p className="font-bold text-slate-800">{item.nome}</p>
+                                  <p className="text-slate-400 text-[10px] leading-tight">{item.obs}</p>
+                                </div>
+                                <span className="bg-teal-100 text-teal-700 font-black px-2 py-1 rounded-lg shrink-0 whitespace-nowrap">
+                                  {item.dose}
+                                </span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                  {filteredProtocolos.length === 0 && (
-                    <p className="text-center text-xs text-slate-400 py-4 italic">Nenhum resultado encontrado.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {dilutionData.map((m, idx) => (
+                        <div key={idx} className="bg-white/50 p-4 rounded-2xl border border-blue-50 space-y-3 group hover:bg-white transition-all shadow-sm">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="font-black text-slate-800 text-sm">{m.nome}</p>
+                              <p className="text-[10px] text-blue-500 font-bold uppercase tracking-tight">Diluente: {m.reconstituicao?.diluente} ({m.reconstituicao?.volumeDiluente})</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Vol. Final</p>
+                              <p className="text-xs font-black text-slate-700">{m.reconstituicao?.volumeFinal}</p>
+                            </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-2 bg-blue-50/30 p-2 rounded-xl">
+                            <div>
+                              <p className="text-[8px] text-blue-400 font-bold uppercase">Ambiente (15-30°C)</p>
+                              <p className="text-[10px] font-bold text-slate-600">{m.reconstituicao?.estabilidadeTA}</p>
+                            </div>
+                            <div>
+                              <p className="text-[8px] text-blue-400 font-bold uppercase">Geladeira (2-8°C)</p>
+                              <p className="text-[10px] font-bold text-slate-600">{m.reconstituicao?.estabilidadeRef}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
+                  <div className="pt-4 border-t border-white/20 mt-2">
+                    <p className="text-[8px] text-slate-400 text-center font-bold uppercase tracking-[0.2em] px-4">
+                      Dados extraídos do Manual de Farmácia Pediátrica (Mesquita, 2020)
+                    </p>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -415,14 +496,31 @@ export default function App() {
                         <p className="text-[10px] font-bold text-teal-800 uppercase tracking-widest mb-3 opacity-70 flex items-center justify-between">
                           <span>Dose e Via</span>
                         </p>
-                        <p className="text-2xl font-bold text-slate-800 leading-tight">
-                          Dar / Fazer <span className="text-teal-600 bg-teal-50 px-2 rounded-lg">{dosage}</span>
-                        </p>
-                        {explicitDose && (
-                          <p className="text-[10px] text-teal-600 mt-2 font-medium bg-teal-50/50 p-2 rounded-lg border border-teal-100/50 italic">
-                            Cálculo baseado na dose de <strong>{explicitDose}</strong>.
-                          </p>
+                        <div className="flex flex-col gap-2">
+                          <div className="text-2xl font-bold text-slate-800 leading-relaxed">
+                            Dar / Fazer <span className="text-teal-600 bg-teal-50 px-2 rounded-xl whitespace-pre-line inline-block align-top mt-1">{dosage?.primary}</span>
+                          </div>
+                          {dosage?.secondary && (
+                            <p className="text-sm font-bold text-slate-400 ml-1">
+                              Equivalente a <span className="text-teal-500">{dosage.secondary}</span>
+                            </p>
+                          )}
+                        </div>
+                        {doseInfo && (
+                          <div className={`mt-2 flex items-center justify-between p-2 rounded-xl border ${doseInfo.isCustom ? 'bg-amber-50/50 border-amber-100' : 'bg-teal-50/30 border-teal-100/30'}`}>
+                            <p className={`text-[9px] font-medium italic ${doseInfo.isCustom ? 'text-amber-800' : 'text-teal-600'}`}>
+                              Cálculo baseado na dose de <strong>{doseInfo.label}</strong>
+                            </p>
+                            <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter ${doseInfo.isCustom ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'}`}>
+                              {doseInfo.isCustom ? 'Dose Customizada' : 'Dose Padrão'}
+                            </span>
+                          </div>
                         )}
+                        <div className="mt-4 pt-4 border-t border-slate-100">
+                          <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest flex items-center gap-1">
+                            <BookOpen className="w-2.5 h-2.5" /> Fonte: Manual de Farmácia Pediátrica (Vanda Cláudia B. de Mesquita, 2020)
+                          </p>
+                        </div>
                       </div>
                     </div>
 
@@ -461,10 +559,45 @@ export default function App() {
                         <Clock className="h-7 w-7 text-orange-400" />
                       </div>
                       <div>
-                        <p className="text-[10px] font-bold text-orange-800 uppercase tracking-widest mb-3 opacity-70">Posologia Sugerida</p>
-                        <p className="text-lg text-slate-600 leading-relaxed font-medium">
+                        <p className="text-[10px] font-bold text-orange-800 uppercase tracking-widest mb-3 opacity-70 flex items-center justify-between">
+                          <span>Posologia Sugerida</span>
+                          {selectedMedicamento.posologiaPorIdade && (
+                            <span className="bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded text-[8px] font-black">GUIA DE IDADES</span>
+                          )}
+                        </p>
+                        <p className="text-lg text-slate-600 leading-relaxed font-medium mb-4">
                           {selectedMedicamento.pos}
                         </p>
+
+                        {selectedMedicamento.posologiaPorIdade && (
+                          <div className="space-y-2">
+                            {selectedMedicamento.posologiaPorIdade.map((f, i) => {
+                              // Simple heuristic to highlight the correct row if idade is provided
+                              // This is just a visual guide since age ranges vary in format
+                              const isHighlight = idade && f.faixa.toLowerCase().includes(
+                                parseIdadeParaDias(idade)! <= 8 ? '0-8' : 
+                                parseIdadeParaDias(idade)! <= 30 ? '9-30' : '>30'
+                              );
+
+                              return (
+                                <div 
+                                  key={i} 
+                                  className={`p-3 rounded-xl border transition-all ${isHighlight ? 'bg-orange-50 border-orange-200' : 'bg-slate-50/50 border-slate-100 opacity-60'}`}
+                                >
+                                  <div className="flex justify-between items-center mb-1">
+                                    <span className={`text-[10px] font-black uppercase tracking-wider ${isHighlight ? 'text-orange-600' : 'text-slate-400'}`}>
+                                      {f.faixa}
+                                    </span>
+                                    {isHighlight && <div className="w-1.5 h-1.5 rounded-full bg-orange-400" />}
+                                  </div>
+                                  <p className={`text-xs ${isHighlight ? 'font-bold text-slate-800' : 'text-slate-500'}`}>
+                                    {f.orientacao}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
 
