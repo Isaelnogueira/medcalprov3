@@ -46,6 +46,8 @@ export default function App() {
   const [idade, setIdade] = useState<string>('');
   const [dosePorQuilo, setDosePorQuilo] = useState<string>('');
   const [medicamentoId, setMedicamentoId] = useState<string>('');
+  const [medSearch, setMedSearch] = useState('');
+  const [showMedResults, setShowMedResults] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [showRef, setShowRef] = useState(false);
   const [showDilutionTable, setShowDilutionTable] = useState(false);
@@ -68,6 +70,17 @@ export default function App() {
       .filter(m => !!m.reconstituicao)
       .filter(m => !refSearch || m.nome.toLowerCase().includes(refSearch.toLowerCase()));
   }, [refSearch]);
+
+  const filteredMeds = useMemo(() => {
+    const search = medSearch.toLowerCase();
+    if (!search) return [];
+    return Object.entries(MEDICAMENTOS)
+      .filter(([_, m]) => 
+        m.nome.toLowerCase().includes(search) || 
+        m.categoria.toLowerCase().includes(search)
+      )
+      .slice(0, 10);
+  }, [medSearch]);
 
   const selectedMedicamento = MEDICAMENTOS[medicamentoId];
 
@@ -190,36 +203,88 @@ export default function App() {
 
         <section className="flex-1 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 md:p-8 shadow-xl flex flex-col">
           <div className="space-y-8 flex-1">
-            {/* Medicamento Select */}
-            <div className="space-y-3 flex-1 flex flex-col">
+            {/* Medicamento Search */}
+            <div className="space-y-3 relative">
               <label className="block text-[10px] font-bold text-teal-800 uppercase tracking-widest ml-1 flex items-center gap-2">
-                <Search className="w-3 h-3" /> Fármaco
+                <Search className="w-3 h-3" /> Buscar Fármaco
               </label>
-              <div className="relative flex-1">
-                <select
-                  value={medicamentoId}
-                  onChange={(e) => {
-                    setMedicamentoId(e.target.value);
-                    setShowResult(false);
-                  }}
-                  className="w-full bg-white/60 border border-teal-100/50 rounded-2xl px-4 py-4 text-sm font-medium text-slate-700 focus:outline-none focus:ring-4 focus:ring-teal-500/10 appearance-none cursor-pointer h-full min-h-[60px]"
-                >
-                  <option value="">Selecione um fármaco...</option>
-                  {CATEGORIAS.map(categoria => (
-                    <optgroup key={categoria} label={categoria}>
-                      {Object.entries(MEDICAMENTOS)
-                        .filter(([_, m]) => m.categoria === categoria)
-                        .map(([id, m]) => (
-                          <option key={id} value={id}>{m.nome}</option>
-                        ))
-                      }
-                    </optgroup>
-                  ))}
-                </select>
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                  <Droplets className="w-4 h-4" />
+              <div className="relative">
+                <div className="relative group">
+                  <input
+                    type="text"
+                    placeholder="Busque por nome ou categoria..."
+                    value={medSearch}
+                    onChange={(e) => {
+                      setMedSearch(e.target.value);
+                      setShowMedResults(true);
+                      setShowResult(false);
+                    }}
+                    onFocus={() => setShowMedResults(true)}
+                    className="w-full bg-white/60 border border-teal-100/50 rounded-2xl px-5 py-4 text-sm font-medium text-slate-700 focus:outline-none focus:ring-4 focus:ring-teal-500/10 transition-all placeholder:text-slate-200"
+                  />
+                  <div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                    <Search className="w-4 h-4" />
+                  </div>
                 </div>
+
+                <AnimatePresence>
+                  {showMedResults && medSearch && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="absolute left-0 right-0 top-full mt-2 bg-white rounded-2xl shadow-2xl border border-teal-50 overflow-hidden z-[100]"
+                    >
+                      {filteredMeds.length > 0 ? (
+                        <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
+                          {filteredMeds.map(([id, m]) => (
+                            <button
+                              key={id}
+                              onClick={() => {
+                                setMedicamentoId(id);
+                                setMedSearch(m.nome);
+                                setShowMedResults(false);
+                                setShowResult(false);
+                              }}
+                              className="w-full text-left px-5 py-3 hover:bg-teal-50 transition-colors border-b border-teal-50 last:border-0 group"
+                            >
+                              <p className="font-bold text-slate-800 text-sm group-hover:text-teal-700">{m.nome}</p>
+                              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">{m.categoria}</p>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="p-8 text-center">
+                          <p className="text-sm text-slate-400 font-medium italic">Nenhum fármaco encontrado.</p>
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
+              
+              {selectedMedicamento && !showMedResults && (
+                <div className="bg-teal-600 text-white rounded-xl p-3 flex items-center justify-between animate-in fade-in zoom-in-95">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                      <Droplets className="w-4 h-4 text-white" />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-tighter opacity-70">Selecionado</p>
+                      <p className="text-[12px] font-bold leading-none">{selectedMedicamento.nome}</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setMedicamentoId('');
+                      setMedSearch('');
+                    }}
+                    className="text-white/50 hover:text-white transition-colors"
+                  >
+                    <ClipboardList className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Dose Personalizada */}
